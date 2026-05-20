@@ -299,6 +299,81 @@ def test_prior_conversation_no_leads_to_registration_prompt(tmp_path):
     assert "처음 뵙는" not in second.response_text
 
 
+def test_explicit_new_registration_skips_prior_memory_check(tmp_path):
+    memory = make_memory(tmp_path)
+
+    result = run(
+        identity_guard.evaluate_identity_gate(
+            memory_engine=memory,
+            text="나 새로운 정보 등록해줘",
+            speaker_id="demo-explicit-register",
+        )
+    )
+
+    assert result.reason == "needs_registration"
+    assert "이름" in result.response_text
+    assert "일전에 대화" not in result.response_text
+    state = run(memory.load_identity_state("demo-explicit-register"))
+    assert state.get("pending_identity_action") == "registration"
+
+
+def test_explicit_new_registration_overrides_existing_test_memory(tmp_path):
+    memory = make_memory(tmp_path)
+    run(
+        memory.save_identity_profile(
+            "demo-reused-speaker",
+            {"name": "테스트", "gender": "남성", "age": "60"},
+            mark_verified=True,
+        )
+    )
+
+    first = run(
+        identity_guard.evaluate_identity_gate(
+            memory_engine=memory,
+            text="나 새로운 정보 등록해줘",
+            speaker_id="demo-reused-speaker",
+        )
+    )
+    assert first.reason == "needs_registration"
+    assert "일전에 대화" not in first.response_text
+
+    second = run(
+        identity_guard.evaluate_identity_gate(
+            memory_engine=memory,
+            text="김영수 72살 남자야",
+            speaker_id="demo-reused-speaker",
+        )
+    )
+    assert second.reason == "identity_registered"
+    assert "김영수님, 남성, 72세로 기억하겠습니다" in second.response_text
+    state = run(memory.load_identity_state("demo-reused-speaker"))
+    assert state["profile"]["name"] == "김영수"
+    assert state["profile"]["age"] == "72"
+    assert state["profile"]["gender"] == "남성"
+
+
+def test_medication_registration_request_does_not_start_identity_registration(tmp_path):
+    memory = make_memory(tmp_path)
+    run(
+        memory.save_identity_profile(
+            "demo-med-register",
+            {"name": "김영수", "gender": "남성", "age": "72"},
+            mark_verified=True,
+        )
+    )
+
+    result = run(
+        identity_guard.evaluate_identity_gate(
+            memory_engine=memory,
+            text="혈압약 새로 등록해줘",
+            speaker_id="demo-med-register",
+        )
+    )
+
+    assert result.allowed is True
+    assert result.reason == "identity_verified"
+
+
 def test_new_speaker_uses_flash_profile_before_registration_prompt(tmp_path):
     memory = make_memory(tmp_path)
     run(

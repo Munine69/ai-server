@@ -111,6 +111,40 @@ async def evaluate_identity_gate(
     if is_wake_word_only(text) or _is_ambiguous_identity_reply(text):
         identity_update = {}
 
+    if _is_explicit_new_registration_request(text):
+        if _has_identity_core(identity_update):
+            saved = await memory_engine.save_identity_profile(
+                speaker_id,
+                identity_update,
+                mark_verified=True,
+            )
+            await memory_engine.update_flash_profile(speaker_id, saved)
+            return IdentityGateResult(
+                allowed=False,
+                reason="identity_registered",
+                response_text=_registration_completed(saved),
+                metadata={
+                    "speaker_id": speaker_id,
+                    "profile": saved,
+                    "identity_extract": identity_extract,
+                    "saved_state": saved,
+                    "explicit_registration_request": True,
+                },
+            )
+        saved = await memory_engine.mark_identity_pending(speaker_id, "registration")
+        return IdentityGateResult(
+            allowed=False,
+            reason="needs_registration",
+            response_text=_registration_question(),
+            metadata={
+                "speaker_id": speaker_id,
+                "profile": saved,
+                "identity_update": identity_update,
+                "identity_extract": identity_extract,
+                "explicit_registration_request": True,
+            },
+        )
+
     if is_profile_recall_query(text) and _has_profile_identity(profile):
         if pending_action in {"identity_conflict", "reverification"}:
             await memory_engine.mark_identity_seen(speaker_id, verified=True)
@@ -537,6 +571,65 @@ def _looks_like_invalid_identity_name(name: str) -> bool:
         "여성이고",
         "우쭈우쭈",
     }
+
+
+def _is_explicit_new_registration_request(text: str) -> bool:
+    """Detect user-profile registration requests before prior-memory checks.
+
+    Keep medication registration out of this fast path so utterances like
+    "혈압약 새로 등록해줘" can still reach the medication flow.
+    """
+    compact = re.sub(r"[\s.?!,，。~]+", "", (text or "").strip().lower())
+    if not compact:
+        return False
+
+    medication_terms = (
+        "약",
+        "처방",
+        "복용",
+        "복약",
+        "알림",
+        "사진",
+        "약봉투",
+        "ocr",
+    )
+    identity_terms = (
+        "내정보",
+        "내프로필",
+        "사용자정보",
+        "사용자등록",
+        "프로필",
+        "신상",
+        "신원",
+        "신규사용자",
+        "새사용자",
+        "새로운정보",
+        "새정보",
+    )
+    has_identity_term = any(token in compact for token in identity_terms)
+    if any(token in compact for token in medication_terms) and not has_identity_term:
+        return False
+
+    return has_identity_term or any(
+        token in compact
+        for token in (
+            "새로등록",
+            "새등록",
+            "신규등록",
+            "다시등록",
+            "처음등록",
+            "새로가입",
+            "신규가입",
+            "처음왔",
+            "처음이야",
+            "처음입니다",
+            "처음사용",
+            "없는것같아새로",
+            "없는거같아새로",
+            "없던것같아새로",
+            "없던거같아새로",
+        )
+    )
 
 
 def _should_call_identity_extract_llm(
@@ -1010,10 +1103,10 @@ def _registration_completed(profile: dict[str, Any]) -> str:
     detail_text = ", ".join(details)
     if detail_text:
         return (
-            f"알겠습니다. {name}님, {detail_text}로 기억하겠습니다. "
-            f"앞으로 복약 정보와 상담 내용을 {name}님 기준으로 안내드릴게요."
+            f"{name}님, {detail_text}로 기억하겠습니다. "
+            f"앞으로 복약 정보와 건강 메모는 {name}님 기준으로 안내드릴게요."
         )
-    return f"알겠습니다. {name}님으로 기억하겠습니다. 앞으로 {name}님 기준으로 안내드릴게요."
+    return f"{name}님으로 기억하겠습니다. 앞으로 {name}님 기준으로 안내드릴게요."
 
 
 def _reverified_message(profile: dict[str, Any]) -> str:
